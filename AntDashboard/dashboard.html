@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ANT+ Coach Dashboard</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 24px;
+      background: #f7f7f9;
+      color: #222;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      max-width: 900px;
+      background: #fff;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 12px 16px;
+      text-align: center;
+    }
+    th {
+      background: #1f2937;
+      color: #fff;
+    }
+    .status-ok {
+      color: #0f7b0f;
+      font-weight: bold;
+    }
+    .status-lost {
+      color: #b91c1c;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>ANT+ Coach Dashboard</h1>
+  <p>WebSocket: <code>ws://localhost:3001</code></p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Rider</th>
+        <th>HR</th>
+        <th>Power (W)</th>
+        <th>Cadence</th>
+        <th>Status</th>
+        <th>HR Device</th>
+        <th>Power Device</th>
+      </tr>
+    </thead>
+    <tbody id="riderRows"></tbody>
+  </table>
+
+  <script>
+    const tbody = document.getElementById('riderRows');
+    const rows = {};
+
+    function statusLabel(lastSeenMs) {
+      return lastSeenMs < 2000 ? 'OK' : 'LOST';
+    }
+
+    function statusClass(lastSeenMs) {
+      return lastSeenMs < 2000 ? 'status-ok' : 'status-lost';
+    }
+
+    function renderRow(data) {
+      let row = rows[data.rider];
+      if (!row) {
+        row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${data.rider}</td>
+          <td class="hr"></td>
+          <td class="power"></td>
+          <td class="cadence"></td>
+          <td class="status"></td>
+          <td class="hrDevice"></td>
+          <td class="pwrDevice"></td>
+        `;
+        tbody.appendChild(row);
+        rows[data.rider] = row;
+      }
+
+      row.querySelector('.hr').textContent = data.hr || 0;
+      row.querySelector('.power').textContent = data.power || 0;
+      row.querySelector('.cadence').textContent = data.cadence >= 0 ? data.cadence : '-';
+      row.querySelector('.hrDevice').textContent = data.hrDevice || '-';
+      row.querySelector('.pwrDevice').textContent = data.pwrDevice || '-';
+
+      const statusCell = row.querySelector('.status');
+      statusCell.textContent = statusLabel(data.lastSeenMs);
+      statusCell.className = 'status ' + statusClass(data.lastSeenMs);
+    }
+
+    const ws = new WebSocket('ws://localhost:3001');
+    ws.onmessage = (event) => {
+      const payload = JSON.parse(event.data);
+      payload.forEach(renderRow);
+    };
+    ws.onopen = () => console.log('WebSocket connected');
+    ws.onerror = (err) => console.error('WebSocket error', err);
+  </script>
+</body>
+</html>
