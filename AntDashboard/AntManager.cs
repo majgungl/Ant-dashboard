@@ -46,8 +46,29 @@ namespace AntDashboard
             AntReflection.TryInvoke(_device, new[] { "resetSystem", "ResetSystem" });
             AntReflection.TryInvoke(_device, new[] { "setNetworkKey", "SetNetworkKey" }, NetworkNumber, NetworkKey);
 
-            InitializeChannels(DeviceTypeHeartRate, HeartRatePeriod, isPower: false, startChannelNumber: 0, channelsNeeded: _riders.Length);
-            InitializeChannels(DeviceTypePower, PowerPeriod, isPower: true, startChannelNumber: (byte)_riders.Length, channelsNeeded: _riders.Length);
+            var maxChannels = AntReflection.TryGetMaxChannels(_device);
+            if (maxChannels <= 0)
+            {
+                maxChannels = AntReflection.ProbeMaxChannels(_device, 16);
+            }
+
+            if (maxChannels <= 0)
+            {
+                maxChannels = 1;
+            }
+
+            var hrChannels = Math.Min(_riders.Length, (maxChannels + 1) / 2);
+            var powerChannels = Math.Min(_riders.Length, maxChannels - hrChannels);
+
+            if (powerChannels == 0 && maxChannels > 0)
+            {
+                hrChannels = Math.Min(_riders.Length, maxChannels);
+            }
+
+            Console.WriteLine($"Detected max ANT channels: {maxChannels}. Using HR channels: {hrChannels}, Power channels: {powerChannels}.");
+
+            InitializeChannels(DeviceTypeHeartRate, HeartRatePeriod, isPower: false, startChannelNumber: 0, channelsNeeded: hrChannels);
+            InitializeChannels(DeviceTypePower, PowerPeriod, isPower: true, startChannelNumber: (byte)hrChannels, channelsNeeded: powerChannels);
         }
 
         public void ResetPairing()
@@ -76,7 +97,11 @@ namespace AntDashboard
             for (byte i = 0; i < channelsNeeded; i++)
             {
                 var channelNumber = (byte)(startChannelNumber + i);
-                var channel = AntReflection.GetChannel(_device, channelNumber);
+                if (!AntReflection.TryGetChannel(_device, channelNumber, out var channel, out var error))
+                {
+                    Console.WriteLine($"Unable to open channel {channelNumber}: {error?.Message ?? "unknown error"}");
+                    break;
+                }
                 var definition = new ChannelDefinition(channelNumber, channel, deviceType, period, isPower);
 
                 _channelsByNumber[channelNumber] = definition;
@@ -251,15 +276,33 @@ namespace AntDashboard
 
         private static class AntReflection
         {
-            public static ANT_Channel GetChannel(ANT_Device device, byte channelNumber)
+            public static bool TryGetChannel(ANT_Device device, byte channelNumber, out ANT_Channel channel, out Exception error)
             {
+                channel = null;
+                error = null;
+
                 var method = device.GetType().GetMethod("getChannel") ?? device.GetType().GetMethod("GetChannel");
                 if (method == null)
                 {
-                    throw new InvalidOperationException("ANT_Device.getChannel not found.");
+                    error = new InvalidOperationException("ANT_Device.getChannel not found.");
+                    return false;
                 }
 
-                return (ANT_Channel)method.Invoke(device, new object[] { channelNumber });
+                try
+                {
+                    channel = (ANT_Channel)method.Invoke(device, new object[] { channelNumber });
+                    return true;
+                }
+                catch (TargetInvocationException ex)
+                {
+                    error = ex.InnerException ?? ex;
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    error = ex;
+                    return false;
+                }
             }
 
             public static void TryInvoke(object target, string[] methodNames, params object[] args)
@@ -367,6 +410,53 @@ namespace AntDashboard
                 return 0;
             }
 
+            public static int TryGetMaxChannels(ANT_Device device)
+            {
+                var capType = device.GetType().Assembly.GetType("ANT_Managed_Library.ANT_DeviceCapabilities");
+                if (capType == null)
+                {
+                    return 0;
+                }
+
+                var method = device.GetType().GetMethod("getDeviceCapabilities") ?? device.GetType().GetMethod("GetDeviceCapabilities");
+                if (method == null)
+                {
+                    return 0;
+                }
+
+                object capObject = Activator.CreateInstance(capType);
+                object result = null;
+
+                if (method.GetParameters().Length == 0)
+                {
+                    result = method.Invoke(device, null);
+                }
+                else
+                {
+                    result = method.Invoke(device, new[] { capObject });
+                }
+
+                if (result != null && capType.IsInstanceOfType(result))
+                {
+                    capObject = result;
+                }
+
+                return ReadIntMember(capObject, capType, new[] { "maximumChannels", "MaximumChannels", "maxChannels", "MaxChannels" });
+            }
+
+            public static int ProbeMaxChannels(ANT_Device device, int maxProbe)
+            {
+                for (var i = 0; i < maxProbe; i++)
+                {
+                    if (!TryGetChannel(device, (byte)i, out _, out _))
+                    {
+                        return i;
+                    }
+                }
+
+                return maxProbe;
+            }
+
             private static MethodInfo FindMethod(object target, string[] methodNames, params object[] args)
             {
                 var argTypes = args.Select(arg => arg?.GetType()).ToArray();
@@ -422,6 +512,34 @@ namespace AntDashboard
                 {
                     Console.WriteLine($" - {evt.Name}");
                 }
+            }
+
+            private static int ReadIntMember(object instance, Type type, IEnumerable<string> names)
+            {
+                foreach (var name in names)
+                {
+                    var property = type.GetProperty(name);
+                    if (property != null)
+                    {
+                        var value = property.GetValue(instance, null);
+                        if (value != null)
+                        {
+                            return Convert.ToInt32(value);
+                        }
+                    }
+
+                    var field = type.GetField(name);
+                    if (field != null)
+                    {
+                        var value = field.GetValue(instance);
+                        if (value != null)
+                        {
+                            return Convert.ToInt32(value);
+                        }
+                    }
+                }
+
+                return 0;
             }
         }
     }
